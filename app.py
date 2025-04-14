@@ -1,36 +1,22 @@
 #!/usr/bin/python3
 import os
+import gc
 import json
 import gzip
 import argparse
-from base64 import b64encode
+from config import *
 from io import BytesIO
-from tempfile import gettempdir
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from base64 import b64encode
 from socketserver import ThreadingMixIn
 from urllib.parse import urlparse, parse_qsl, quote, unquote
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
 import requests
-from cachelib import SimpleCache
+from cachelib import FileSystemCache
 
-
-REGION_ALL = 'all'
-PLAYLIST_PATH = 'playlist.m3u8'
-EPG_PATH = 'epg.xml'
-CLEAR_CACHE_PATH = 'clear_cache'
-STATUS_PATH = ''
-APP_URL = 'https://i.mjh.nz/SamsungTVPlus/.channels.json.gz'
-EPG_URL = 'https://i.mjh.nz/SamsungTVPlus/{region}.xml.gz'
-PLAYBACK_URL = 'https://jmp2.uk/sam-{id}.m3u8'
-DELIMITER = '|'
-TIMEOUT = (5,20) #connect,read
-CACHE_TIME = os.getenv("CACHE_TIME", 300) # default of 5mins
-CHUNKSIZE = 1024
-
-CACHE_DIR = os.path.join(gettempdir(), 'samsung-tvplus-for-channels')
 os.makedirs(CACHE_DIR, exist_ok=True)
 print(f"Cache dir: {CACHE_DIR}")
-cache = SimpleCache()
+cache = FileSystemCache(CACHE_DIR, default_timeout=int(os.getenv("CACHE_TIME", 300)))
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -91,6 +77,7 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
 
     def _app_data(self):
+        gc.collect()
         cache_path = cache.get(APP_URL)
         if cache_path and os.path.exists(cache_path):
             self.log_message(f"Cache hit: {APP_URL}")
@@ -132,7 +119,11 @@ class Handler(BaseHTTPRequestHandler):
             channels.update(all_channels[region].get('channels', {}))
 
         self.wfile.write(b'#EXTM3U\n')
+        channel_count = 0
         for key in sorted(channels.keys(), key=lambda x: channels[x]['chno'] if sort == 'chno' else channels[x]['name'].strip().lower()):
+            if MAX_CHANNELS > 0 and channel_count >= MAX_CHANNELS:
+                break
+            
             channel = channels[key]
             logo = channel['logo']
             group = channel['group']
@@ -162,8 +153,10 @@ class Handler(BaseHTTPRequestHandler):
 
             # Write channel information
             self.wfile.write(f'#EXTINF:-1 channel-id="{channel_id}" tvg-id="{key}" tvg-logo="{logo}" group-title="{group}"{chno},{name}\n{url}\n'.encode('utf8'))
+            channel_count += 1
 
     def _epg(self):
+        gc.collect()
         regions = (self._params.get('regions') or os.getenv('REGIONS', REGION_ALL)).split(DELIMITER)
         region = regions[0] if len(regions) == 1 else REGION_ALL
         url = EPG_URL.format(region=region)
@@ -183,59 +176,162 @@ class Handler(BaseHTTPRequestHandler):
 
         self.log_message(f"Downloading {url}...")
         cache_path = os.path.join(CACHE_DIR, b64encode(url.encode()).decode())
-        # Download the .gz EPG file
-        with open(cache_path, 'wb') as cache_f:
-            with requests.get(url, stream=True, timeout=TIMEOUT) as resp:
-                resp.raise_for_status()
+        try:
+            # Download the .gz EPG file
+            with open(cache_path, 'wb') as cache_f:
+                with requests.get(url, stream=True, timeout=TIMEOUT) as resp:
+                    resp.raise_for_status()
 
-                self.send_response(200)
-                self.send_header('Content-Type', 'application/xml')
-                self.end_headers()
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'application/xml')
+                    self.end_headers()
 
-                # Decompress the .gz content
-                with gzip.GzipFile(fileobj=BytesIO(resp.content)) as gz:
-                    chunk = gz.read(CHUNKSIZE)
-                    while chunk:
-                        cache_f.write(chunk)
-                        self.wfile.write(chunk)
+                    # Decompress the .gz content
+                    with gzip.GzipFile(fileobj=BytesIO(resp.content)) as gz:
                         chunk = gz.read(CHUNKSIZE)
-        cache.set(url, cache_path, timeout=CACHE_TIME)
+                        while chunk:
+                            cache_f.write(chunk)
+                            self.wfile.write(chunk)
+                            chunk = gz.read(CHUNKSIZE)
+            cache.set(url, cache_path, timeout=CACHE_TIME)
+        except MemoryError:
+            self.send_response(503)
+            self.send_header('Content-Type', 'text/plain')
+            self.end_headers()
+            self.wfile.write(b"Insufficient memory to process EPG. Try a single region.")
+            gc.collect()
+        except Exception as e:
+            self._error(f"EPG error: {str(e)}")
 
     def _status(self):
-        # Generate HTML content with the favicon link
+        """Generate a lightweight status page with links to playlists and EPG."""
         self.send_response(200)
         self.send_header("Content-type", "text/html; charset=utf-8")
         self.end_headers()
-
+        
         host = self.headers.get('Host')
-        self.wfile.write(f'''
+        
+        # Start with minimal HTML header
+        html_parts = [f'''
             <html>
             <head>
                 <title>Samsung TV Plus for Channels</title>
                 <link rel="icon" href="/favicon.ico" type="image/x-icon">
+                <style>
+                    body {{ font-family: sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }}
+                    h1, h2, h3 {{ color: #333; }}
+                    a {{ color: #0066cc; text-decoration: none; }}
+                    a:hover {{ text-decoration: underline; }}
+                    .region {{ margin-top: 15px; padding: 10px; border-top: 1px solid #eee; }}
+                    .categories {{ margin-top: 25px; border-top: 2px solid #ddd; padding-top: 10px; }}
+                    .category-group {{ display: inline-block; margin-right: 20px; margin-bottom: 10px; vertical-align: top; }}
+                    .links {{ margin-bottom: 10px; }}
+                    ul {{ padding-left: 20px; }}
+                    .category-count {{ color: #666; font-size: 0.8em; }}
+                </style>
             </head>
             <body>
-                <h1>Regions &amp; Groups</h1>
-                <h2>All</h2>
-                Playlist URL: <b><a href="http://{host}/{PLAYLIST_PATH}">http://{host}/{PLAYLIST_PATH}</a></b><br>
-                EPG URL (Set to refresh once per hour): <b><a href="http://{host}/{EPG_PATH}">http://{host}/{EPG_PATH}</a></b>
-        '''.encode('utf8'))
-
-        # Display regions and their group titles with links
-        for region, region_data in self._app_data().items():
+                <h1>Samsung TV Plus for Channels</h1>
+                <div class="links">
+                    <h2>All Regions</h2>
+                    <p>Playlist: <b><a href="http://{host}/{PLAYLIST_PATH}">http://{host}/{PLAYLIST_PATH}</a></b></p>
+                    <p>EPG: <b><a href="http://{host}/{EPG_PATH}">http://{host}/{EPG_PATH}</a></b></p>
+                    <p><a href="http://{host}/{CLEAR_CACHE_PATH}">Clear Cache</a></p>
+                </div>
+        ''']
+        
+        # Get app data only once and process in chunks to save memory
+        app_data = self._app_data()
+        
+        # Collect all categories across regions with channel counts
+        all_categories = {}
+        
+        # First pass: collect all categories and their channel counts
+        for region, region_data in app_data.items():
+            if not region_data.get('channels'):
+                continue
+                
+            for channel in region_data.get('channels', {}).values():
+                group = channel.get('group', '').strip()
+                if not group:
+                    continue
+                    
+                if group not in all_categories:
+                    all_categories[group] = {'count': 0, 'regions': set()}
+                    
+                all_categories[group]['count'] += 1
+                all_categories[group]['regions'].add(region)
+        
+        # Add categories section if we found any
+        if all_categories:
+            # Calculate optimal column layout
+            categories_html = '''
+                <div class="categories">
+                    <h2>Categories</h2>
+                    <p>Select a category to view channels:</p>
+            '''
+            
+            # Sort categories by count (descending)
+            sorted_categories = sorted(all_categories.items(), key=lambda x: x[1]['count'], reverse=True)
+            
+            # Create category groups - max 5 per row and up to 4 columns
+            for i, (category, data) in enumerate(sorted_categories):
+                if i % 5 == 0:
+                    if i > 0:
+                        categories_html += '</div>'
+                    categories_html += '<div class="category-group">'
+                    
+                encoded_category = quote(category)
+                region_param = "" if REGION_ALL in data['regions'] else f"&regions={quote('|'.join(data['regions']))}"
+                categories_html += f'<div><a href="http://{host}/{PLAYLIST_PATH}?groups={encoded_category}{region_param}">{category}</a> <span class="category-count">({data["count"]})</span></div>'
+            
+            # Close the last category group
+            categories_html += '</div></div>'
+            html_parts.append(categories_html)
+        
+        # Process each region
+        for region, region_data in app_data.items():
+            # Skip if region has no channels
+            if not region_data.get('channels'):
+                continue
+                
             encoded_region = quote(region)
-            self.wfile.write(f'''<h2>{region_data["name"]}</h2>
-                             Playlist URL: <b><a href="http://{host}/{PLAYLIST_PATH}?regions={encoded_region}">http://{host}/{PLAYLIST_PATH}?regions={encoded_region}</a></b><br>
-                             EPG URL (Set to refresh once per hour): <b><a href="http://{host}/{EPG_PATH}?regions={encoded_region}">http://{host}/{EPG_PATH}?regions={encoded_region}</a></b><br><ul>'''.encode('utf8'))
-
-            group_names = set(channel.get('group', None) for channel in region_data.get('channels', {}).values())
-            for group in sorted(name for name in group_names if name):
-                encoded_group = quote(group)
-                self.wfile.write(f'<li><a href="http://{host}/{PLAYLIST_PATH}?regions={encoded_region}&groups={encoded_group}">{group}</a></li>'.encode('utf8'))
-            self.wfile.write(b'</ul>')
-
-        self.wfile.write(b'</body></html>')
-
+            region_html = f'''
+                <div class="region">
+                    <h2>{region_data["name"]}</h2>
+                    <p>Playlist: <b><a href="http://{host}/{PLAYLIST_PATH}?regions={encoded_region}">
+                       http://{host}/{PLAYLIST_PATH}?regions={encoded_region}</a></b></p>
+                    <p>EPG: <b><a href="http://{host}/{EPG_PATH}?regions={encoded_region}">
+                       http://{host}/{EPG_PATH}?regions={encoded_region}</a></b></p>
+            '''
+            
+            # Extract unique groups for this region
+            group_names = {}  # {group_name: count}
+            for channel in region_data.get('channels', {}).values():
+                group = channel.get('group', '').strip()
+                if group:
+                    group_names[group] = group_names.get(group, 0) + 1
+            
+            # Only add groups section if there are groups
+            if group_names:
+                region_html += '<h3>Categories:</h3><ul>'
+                for group, count in sorted(group_names.items(), key=lambda x: (-x[1], x[0])):  # Sort by count (desc) then name
+                    encoded_group = quote(group)
+                    region_html += f'<li><a href="http://{host}/{PLAYLIST_PATH}?regions={encoded_region}&groups={encoded_group}">{group}</a> ({count})</li>'
+                region_html += '</ul>'
+                    
+            region_html += '</div>'
+            html_parts.append(region_html)
+        
+        # Close HTML
+        html_parts.append('</body></html>')
+        
+        # Send HTML in chunks to reduce memory usage
+        for part in html_parts:
+            self.wfile.write(part.encode('utf8'))
+            
+        # Force garbage collection after generating the page
+        gc.collect()
 
 class ThreadingSimpleServer(ThreadingMixIn, HTTPServer):
     pass

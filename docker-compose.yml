@@ -1,10 +1,21 @@
 services:
-  samsung-tvplus:
-    container_name: samsung-tvplus
+  samsung-tv-plus:
+    container_name: samsung-tv-plus
     environment:
       - REGIONS=at|ca|ch|de|es|fr|gb|in|it|kr|us
-      - TZ=Pacific/Auckland
+      - TZ=America/Matamoros
+      - CACHE_TIME=600
+      - MAX_CHANNELS=500
+      - CHUNKSIZE=2048 # Increase for better network performance
+      - CONNECT_TIMEOUT=3
+      - READ_TIMEOUT=15
     image: matthuisman/samsung-tvplus-for-channels
     ports:
       - 8182:80
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+        reservations:
+          memory: 64M
