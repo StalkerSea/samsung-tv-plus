@@ -19,17 +19,17 @@ This project creates a local web server that fetches Samsung TV Plus channel dat
 
 ## Available Regions
 
-- at (Austria)
-- ca (Canada)
-- ch (Switzerland)
-- de (Germany)
-- es (Spain)
-- fr (France)
-- gb (United Kingdom)
-- in (India)
-- it (Italy)
-- kr (Korea)
-- us (United States)
+- `at` (Austria)
+- `ca` (Canada)
+- `ch` (Switzerland)
+- `de` (Germany)
+- `es` (Spain)
+- `fr` (France)
+- `gb` (United Kingdom)
+- `in` (India)
+- `it` (Italy)
+- `kr` (Korea)
+- `us` (United States)
 
 ## Installation
 
@@ -67,9 +67,9 @@ This project creates a local web server that fetches Samsung TV Plus channel dat
 
 If you prefer using Docker:
 
-    ```bash
-    docker-compose up -d
-    ```
+ ```bash
+ docker-compose up -d
+ ```
 
 This will start the service on port 8182 (configurable in the `docker-compose.yml` file).
 
@@ -104,27 +104,41 @@ The playlist and EPG endpoints can be customized using URL parameters:
 #### Playlist Parameters
 
 - **regions**: Filter channels by region codes (pipe-separated)
-  `http://localhost:8182/playlist.m3u8?regions=us|gb`
+  ```
+  http://localhost:8182/playlist.m3u8?regions=us|gb
+  ```
 
 - **groups**: Filter channels by groups (pipe-separated)
-  `http://localhost:8182/playlist.m3u8?groups=News|Sports`
+  ```
+  http://localhost:8182/playlist.m3u8?groups=News|Sports
+  ```
 
 - **start_chno**: Starting channel number (integer)
-  `http://localhost:8182/playlist.m3u8?start_chno=1000`
+  ```
+  http://localhost:8182/playlist.m3u8?start_chno=1000
+  ```
 
 - **sort**: Sort method (`chno` or `name`)
-  `http://localhost:8182/playlist.m3u8?sort=name`
+  ```
+  http://localhost:8182/playlist.m3u8?sort=name
+  ```
 
 - **include**: Only include specified channel IDs (pipe-separated)
-  `http://localhost:8182/playlist.m3u8?include=samsung-123|samsung-456`
+  ```
+  http://localhost:8182/playlist.m3u8?include=samsung-123|samsung-456
+  ```
 
 - **exclude**: Exclude specified channel IDs (pipe-separated)
-  `http://localhost:8182/playlist.m3u8?exclude=samsung-789`
+  ```
+  http://localhost:8182/playlist.m3u8?exclude=samsung-789
+  ```
 
 ### EPG Parameters
 
 - **regions**: Filter EPG by region code
-  `http://localhost:8182/epg.xml?regions=us`
+  ```
+  http://localhost:8182/epg.xml?regions=us
+  ```
 
 ## Memory Optimization
 
